@@ -1,3 +1,6 @@
+import yaml 
+from dataclasses import dataclass
+
 import torch 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,6 +34,32 @@ def apply_rotary_pos_emb(x, rope_emb):
     x_partner = x_partner.flatten(-2)
 
     return (x * cos + x_partner * sin).type_as(x)
+
+
+@dataclass
+class TinyConfig:
+    d_model: int = 768
+    vocab_size: int = 50256
+    max_seq_len: int = 2048
+    max_batch_size: int = 512
+    n_heads: int = 12
+    n_layers: int = 12
+    
+    kv_latent_dim: int = 256
+    qk_rope_head_dim: int = 32
+    qk_nope_head_dim: int = 64
+    v_head_dim: int = 64
+    
+    hidden_dim: int = 2048
+    init_alpha: float = 0.4
+    init_shift: float = 0.5
+    theta: float = 10000.0
+
+    @classmethod
+    def from_yaml(cls, yaml_path: str) -> "TinyConfig":
+        with open(yaml_path, "r") as f:
+            config_dict = yaml.safe_load(f)["model"]
+        return cls(**config_dict)
 
 
 class Derf(nn.Module):
@@ -79,3 +108,78 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return self.down_proj(F.silu(self.gate_proj(x)) * self.content_proj(x))
+
+
+class MLA(nn.Module):
+    """Multi-Head Latent Attention (MLA) with Latent KV Caching and Exclusive Attention (XSA)."""
+
+    def __init__(self, args: TinyConfig):
+        super().__init__()
+
+        self.max_batch_size = args.max_batch_size
+        self.max_seq_len = args.max_seq_len
+        self.d_model = args.d_model
+        self.n_heads = args.n_heads
+        self.kv_latent_dim = args.kv_latent_dim
+        self.qk_nope_head_dim = args.qk_nope_head_dim
+        self.qk_rope_head_dim = args.qk_rope_head_dim
+        self.v_head_dim = args.v_head_dim
+        self.qk_head_dim = args.qk_nope_head_dim + args.qk_rope_head_dim
+
+        # query projection
+        self.q_proj = nn.Linear(self.d_model, self.n_heads * self.qk_head_dim, bias=False)
+        # compressed kv projections onto a latent space + keys for rope
+        self.down_kv_proj = nn.Linear(self.d_model, self.kv_latent_dim+self.qk_rope_head_dim, bias=False)
+        self.up_kv_proj = nn.Linear(self.kv_latent_dim, self.n_heads*(self.qk_nope_head_dim + self.v_head_dim), bias=False)
+        # output projections
+        self.out_proj = nn.Linear(self.n_heads * self.v_head_dim, self.d_model, bias=False)
+
+        self.register_buffer(
+            "cache_c_kv",
+            torch.zeros(self.max_batch_size, self.max_seq_len, self.kv_latent_dim),
+            persistent=False,
+        )
+        self.register_buffer(
+            "cache_k_rope",
+            torch.zeros(self.max_batch_size, self.max_seq_len, self.qk_rope_head_dim),
+            persistent=False,
+        )
+
+    def forward(self, 
+                x: torch.Tensor, 
+                rope_embs: torch.Tensor, 
+                start_pos: int = 0,) -> torch.Tensor:
+        bsz, seq, dim = x.shape
+
+        # queries projections
+        q = self.q_proj(x).reshape(bsz, seq, self.n_heads, self.qk_head_dim)
+        q_nope, q_rope = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+        q_rope = apply_rotary_pos_emb(q_rope, rope_embs)
+        q = torch.cat([q_nope, q_rope], dim=-1).transpose(1, 2)
+        # latent space + keys for pos embs
+        C_kv = self.down_kv_proj(x)
+        C_kv, k_rope = torch.split(C_kv, [self.kv_latent_dim, self.qk_rope_head_dim], dim=-1)
+        k_rope = apply_rotary_pos_emb(k_rope.unsqueeze(2), rope_embs).squeeze(2)
+
+        # store in pre-allocated kv caches
+        self.cache_c_kv[:bsz, start_pos : start_pos + seq] = C_kv
+        self.cache_k_rope[:bsz, start_pos : start_pos + seq] = k_rope
+        # retrieve cached sequences up to current length (start_pos + seqlen)
+        cached_c_kv = self.cache_c_kv[:bsz, : start_pos + seq]     
+        cached_k_rope = self.cache_k_rope[:bsz, : start_pos + seq]
+
+        # up projections for keys nope and values
+        kv = self.up_kv_proj(cached_c_kv).view(bsz, seq, self.n_heads, self.qk_nope_head_dim + self.v_head_dim)
+        k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+        k = torch.cat([k_nope, cached_k_rope.unsqueeze(2).expand(-1, -1, self.n_heads, -1)], dim=-1).transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        # flash-attention
+        attn_outs = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
+        # xsa (orthogonality to self-value direction)
+        v_norm = F.normalize(v, dim=-1)
+        z = attn_outs - (attn_outs * v_norm).sum(dim=-1, keepdim=True) * v_norm
+        z = z.transpose(1, 2).contiguous().view(bsz, seq, dim)
+
+        return self.out_proj(z)

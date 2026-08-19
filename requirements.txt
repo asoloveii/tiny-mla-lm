@@ -1,3 +1,7 @@
 torch
 pyyaml
 pytest
+tiktoken
+datasets
+numpy
+tqdm

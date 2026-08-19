@@ -216,3 +216,63 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Data - large/regeneratable, never commit
+data/raw/
+data/processed/
+
+# Checkpoints - large binary files, use model registry/artifact storage instead
+checkpoints/
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# RAG vector store - regeneratable from source docs via ingest.py
+rag/index/
+rag/vectorstore/
+*.faiss
+*.index
+chroma_db/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+*.key
+
+# Logs & experiment tracking
+logs/
+wandb/
+mlruns/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Docker
+*.tar
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

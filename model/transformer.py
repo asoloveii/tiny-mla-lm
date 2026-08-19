@@ -111,7 +111,11 @@ class SwiGLU(nn.Module):
 
 
 class MLA(nn.Module):
-    """Multi-Head Latent Attention (MLA) with Latent KV Caching and Exclusive Attention (XSA)."""
+    """Multi-Head Latent Attention (MLA) with Latent KV Caching and Exclusive Attention (XSA).
+    
+    Args:
+        args (TinyConfig): Configuration object containing model hyper-parameters
+    """
 
     def __init__(self, args: TinyConfig):
         super().__init__()
@@ -161,25 +165,153 @@ class MLA(nn.Module):
         C_kv, k_rope = torch.split(C_kv, [self.kv_latent_dim, self.qk_rope_head_dim], dim=-1)
         k_rope = apply_rotary_pos_emb(k_rope.unsqueeze(2), rope_embs).squeeze(2)
 
-        # store in pre-allocated kv caches
-        self.cache_c_kv[:bsz, start_pos : start_pos + seq] = C_kv
-        self.cache_k_rope[:bsz, start_pos : start_pos + seq] = k_rope
-        # retrieve cached sequences up to current length (start_pos + seqlen)
-        cached_c_kv = self.cache_c_kv[:bsz, : start_pos + seq]     
-        cached_k_rope = self.cache_k_rope[:bsz, : start_pos + seq]
+        with torch.no_grad():
+            # store in pre-allocated kv caches
+            self.cache_c_kv[:bsz, start_pos : start_pos + seq] = C_kv
+            self.cache_k_rope[:bsz, start_pos : start_pos + seq] = k_rope
+
+        if start_pos > 0:
+            # retrieve cached sequences up to current length
+            cached_c_kv = torch.cat([self.cache_c_kv[:bsz, :start_pos], C_kv], dim=1)
+            cached_k_rope = torch.cat([self.cache_k_rope[:bsz, :start_pos], k_rope], dim=1)
+        else:
+            cached_c_kv = C_kv
+            cached_k_rope = k_rope
+            
+        total_seq = start_pos + seq
 
         # up projections for keys nope and values
-        kv = self.up_kv_proj(cached_c_kv).view(bsz, seq, self.n_heads, self.qk_nope_head_dim + self.v_head_dim)
+        kv = self.up_kv_proj(cached_c_kv).view(bsz, total_seq, self.n_heads, self.qk_nope_head_dim + self.v_head_dim)
         k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
         k = torch.cat([k_nope, cached_k_rope.unsqueeze(2).expand(-1, -1, self.n_heads, -1)], dim=-1).transpose(1, 2)
         v = v.transpose(1, 2)
 
         # flash-attention
-        attn_outs = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        if start_pos == 0 and seq == total_seq:
+            attn_outs = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            i = torch.arange(seq, device=x.device).unsqueeze(1) + start_pos
+            j = torch.arange(total_seq, device=x.device).unsqueeze(0)
+            causal_mask = j <= i
+            attn_outs = F.scaled_dot_product_attention(q, k, v, attn_mask=causal_mask)
+
+        attn_outs = attn_outs.transpose(1, 2)
 
         # xsa (orthogonality to self-value direction)
-        v_norm = F.normalize(v, dim=-1)
+        v_local = v.transpose(1, 2)[:, start_pos:total_seq, :, :]
+        v_norm = F.normalize(v_local, dim=-1)
         z = attn_outs - (attn_outs * v_norm).sum(dim=-1, keepdim=True) * v_norm
-        z = z.transpose(1, 2).contiguous().view(bsz, seq, dim)
+        z = z.contiguous().view(bsz, seq, dim)
 
         return self.out_proj(z)
+
+
+class Block(nn.Module):
+    """Transformer block with normalization-free residual paths and learnable scaling.
+
+    Combines Multi-Head Latent Attention (MLA) and SwiGLU feed-forward layer 
+    using learnable scalar residual multipliers (ReZero/LayerScale strategy) 
+    and Derf normalization.
+
+    Args:
+        args (TinyConfig): Configuration object containing model hyper-parameters
+    """
+
+    def __init__(self, args):
+        super().__init__()
+
+        self.alpha1 = nn.Parameter(torch.ones(1), requires_grad=True)
+        self.alpha2 = nn.Parameter(torch.ones(1), requires_grad=True)
+
+        self.norm1 = Derf(args.d_model, args.init_alpha, args.init_shift)
+        self.mla = MLA(args)
+
+        self.norm2 = Derf(args.d_model, args.init_alpha, args.init_shift)
+        self.swiglu = SwiGLU(args.d_model, args.hidden_dim)
+
+    def forward(self, 
+                x: torch.Tensor, 
+                rope_embs: torch.Tensor, 
+                start_pos: int = 0) -> torch.Tensor:
+        x = x + self.alpha1 * self.mla(self.norm1(x), rope_embs, start_pos)
+        x = x + self.alpha2 * self.swiglu(self.norm2(x))
+        return x
+
+
+class TinyLM(nn.Module):
+    """TinyLM Causal Language Model.
+
+    A decoder-only architecture utilizing Multi-Head Latent Attention (MLA),
+    gated SwiGLU activations, dynamic error function (Derf) normalization, 
+    and learnable residual scaling.
+
+    Args:
+        args (TinyConfig): Configuration parameters for the model layout and hyperparameters
+    """
+
+    def __init__(self, args: TinyConfig):
+        super().__init__()
+
+        self.embeddings = nn.Embedding(args.vocab_size, args.d_model)
+
+        self.blocks = nn.ModuleList([Block(args) for _ in range(args.n_layers)])
+
+        self.norm = nn.LayerNorm(args.d_model)
+        self.out_proj = nn.Linear(args.d_model, args.vocab_size, bias=False)
+
+        # cache precomputed rotary pos embeddings for attention
+        self.register_buffer(
+            "rope_embs",
+            precompute_rope_embeddings(args.qk_rope_head_dim, args.max_seq_len, args.theta),
+            persistent=False
+        )
+
+    def forward(self, x: torch.Tensor, start_pos: int = 0):
+        bsz, seq = x.shape
+
+        x = self.embeddings(x)
+        rope_embs = self.rope_embs[start_pos : start_pos + seq, :]
+
+        for block in self.blocks:
+            x = block(x, rope_embs, start_pos=start_pos)
+
+        return self.out_proj(self.norm(x))
+
+    @torch.inference_mode
+    def generate(self,
+                 ids: torch.Tensor,
+                 max_tokens: int,
+                 temperature: float = 1.0,
+                 top_k: int = -1):
+
+        self.eval()
+        bsz, prompt_len = ids.shape
+        start_pos = 0
+
+        # prefill prompt sequence into KV caches
+        logits = self(ids, start_pos=start_pos)  # (bsz, prompt_len, vocab_size)
+        start_pos += prompt_len
+        # select logits for the last token position
+        next_token_logits = logits[:, -1, :]
+
+        for _ in range(max_tokens):
+            # apply temperature scaling
+            if temperature > 0:
+                next_token_logits = next_token_logits / temperature
+
+            # apply top-k filtering
+            if top_k > 0:
+                top_logits, _ = torch.topk(next_token_logits, k=top_k)
+                next_token_logits[next_token_logits < top_logits[:, [-1]]] = float("-inf")
+
+            # sample next token from probability distribution
+            probs = torch.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)  # (bsz, 1)
+            # append generated token to complete history
+            ids = torch.cat([ids, next_token], dim=1)
+            #decode single step using incremented start_pos
+            logits = self(next_token, start_pos=start_pos)  # (bsz, 1, vocab_size)
+            next_token_logits = logits[:, -1, :]
+            start_pos += 1
+
+        return ids

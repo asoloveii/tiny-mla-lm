@@ -4,8 +4,6 @@ import multiprocessing as mp
 
 import numpy as np
 import tiktoken
-import torch
-from torch.utils.data import Dataset
 from datasets import load_dataset
 from tqdm import tqdm
 
@@ -90,42 +88,6 @@ def prepare_fineweb_shards(output_dir="./data/processed/fineweb",
     pool.join()
     pbar.close()
     print(f"Finished! {shard_idx} shards, ~{total_tokens/1e9:.2f}B tokens in {output_dir}")
-
-
-class FineWebDataset(Dataset):
-
-    def __init__(self, bin_paths, seq_len):
-        self.seq_len = seq_len
-        self.bin_paths = sorted(bin_paths)
-        self._mmaps = None
-
-        itemsize = np.dtype(np.uint16).itemsize
-        shard_lengths = [os.path.getsize(p) // itemsize for p in self.bin_paths]
-
-        # non-overlapping (seq_len+1)-token windows; remainder per shard is dropped
-        self.samples_per_shard = [max(0, (n - 1) // seq_len) for n in shard_lengths]
-        self.cum_samples = np.cumsum([0] + self.samples_per_shard)
-
-    def __len__(self):
-        return int(self.cum_samples[-1])
-
-    def _lazy_init(self):
-        if self._mmaps is None:  
-            self._mmaps = [np.memmap(p, dtype=np.uint16, mode="r") for p in self.bin_paths]
-
-    def _locate(self, idx):
-        shard_i = int(np.searchsorted(self.cum_samples, idx, side="right") - 1)
-        local_i = idx - self.cum_samples[shard_i]
-        offset = local_i * self.seq_len
-        return shard_i, offset
-
-    def __getitem__(self, idx):
-        self._lazy_init()
-        shard_i, offset = self._locate(idx)
-        chunk = self._mmaps[shard_i][offset : offset + self.seq_len + 1]
-        x = torch.from_numpy(chunk[:-1].astype(np.int64))
-        y = torch.from_numpy(chunk[1:].astype(np.int64))
-        return x, y
 
 
 if __name__ == "__main__":

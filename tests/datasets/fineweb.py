@@ -5,7 +5,8 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from data.prepare.fineweb_subset import FineWebDataset, prepare_fineweb_shards
+from data.prepare.fineweb_subset import prepare_fineweb_shards
+from data.prepare.utils import TokenDataset
 
 
 @pytest.fixture(scope="module")
@@ -65,7 +66,7 @@ def test_token_dataset_with_real_shards(processed_data_dir):
     ]
 
     seq_len = 128
-    dataset = FineWebDataset(bin_paths=bin_paths, seq_len=seq_len)
+    dataset = TokenDataset(bin_paths=bin_paths, seq_len=seq_len)
 
     # dataset should contain at least 1 valid sample
     assert len(dataset) > 0
@@ -97,7 +98,7 @@ def test_dataloader_batching_real_data(processed_data_dir):
     ]
 
     seq_len = 64
-    dataset = FineWebDataset(bin_paths=bin_paths, seq_len=seq_len)
+    dataset = TokenDataset(bin_paths=bin_paths, seq_len=seq_len)
     
     batch_size = 2
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)

@@ -1,0 +1,37 @@
+defaults:
+  - model_config
+  - _self_
+
+wandb:
+  project: "tiny-lm-pretraining"
+  name: "pretrain-fineweb-159M"
+  group: "pretrain"
+  job_type: "train"
+
+data:
+  dataset_name: "HuggingFaceFW/fineweb-edu"
+  data_dir: "./data/raw/fineweb10B"
+  total_tokens: 3_000_000_000 
+
+training:
+  device_batch_size: 16
+  gradient_accumulation_steps: 16
+  mixed_precision: "bfloat16" 
+  seed: 42
+  
+  # step calculation: 3B tokens / (512 batch_size * 2048 seq_len) ≈ 2861 total steps
+  max_steps: 2861
+  
+optimizer:
+  name: "AdamW"
+  lr: 6.0e-4
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+
+scheduler:
+  type: "cosine"
+  # warmup steps = 10% of total steps
+  warmup_steps: 286
+  min_lr: 6.0e-5

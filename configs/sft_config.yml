@@ -1,0 +1,37 @@
+defaults:
+  - model_config
+  - _self_
+
+wandb:
+  project: "tiny-lm-sft"
+  name: "sft-finetome-159M"
+  group: "sft"
+  job_type: "finetune"
+
+data:
+  dataset_name: "mlabonne/FineTome-100k"
+  data_dir: "./data/processed/finetome100k"
+  val_fraction: 0.01
+
+training:
+  device_batch_size: 8
+  gradient_accumulation_steps: 8
+  mixed_precision: "bfloat16"
+  seed: 42
+  
+  # ~100k FineTome samples / 128 global batch size ≈ 3 epochs / ~2340 steps total
+  max_steps: 2340
+
+optimizer:
+  name: "AdamW"
+  lr: 2.0e-5 
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  grad_clip: 1.0
+
+scheduler:
+  type: "cosine"
+  # warmup steps = 10% of total SFT steps
+  warmup_steps: 234
+  min_lr: 2.0e-6

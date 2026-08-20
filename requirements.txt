@@ -5,3 +5,6 @@ tiktoken
 datasets
 numpy
 tqdm
+omegaconf
+wandb
+hydra-core

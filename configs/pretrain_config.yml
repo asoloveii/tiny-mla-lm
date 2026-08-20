@@ -10,7 +10,7 @@ wandb:
 
 data:
   dataset_name: "HuggingFaceFW/fineweb-edu"
-  data_dir: "./data/raw/fineweb10B"
+  data_dir: "./data/raw/fineweb"
   total_tokens: 3_000_000_000 
 
 training:
@@ -18,7 +18,7 @@ training:
   gradient_accumulation_steps: 16
   mixed_precision: "bfloat16" 
   seed: 42
-  
+  val_every: 150
   # step calculation: 3B tokens / (512 batch_size * 2048 seq_len) ≈ 2861 total steps
   max_steps: 2861
   

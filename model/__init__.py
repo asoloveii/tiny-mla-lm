@@ -1,6 +1,6 @@
-from model.transformer import TinyLM, TinyLMConfig
+from model.transformer import TinyLM, TinyConfig
 
 __all__ = [
     "TinyLM",
-    "TinyLMConfig",
+    "TinyConfig",
 ]

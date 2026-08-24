@@ -1,0 +1,41 @@
+defaults:
+  - model_config
+  - _self_
+
+wandb:
+  project: "tiny-lm-grpo"
+  name: "grpo-gsm8k-159M"
+  group: "grpo"
+  job_type: "post-training"
+
+data:
+  dataset_name: "openai/gsm8k"
+  data_dir: "./data/processed/gsm8k"
+
+grpo:
+  group_size: 8          # number of generations per prompt
+  clip_eps: 0.2          # clipping
+  kl_coeff: 0.04         # beta penalty coefficient 
+  temperature: 0.9       
+  max_gen_len: 256       
+
+training:
+  device_batch_size: 2   # number of prompt trajectories per GPU per step
+  gradient_accumulation_steps: 4
+  mixed_precision: "bfloat16"
+  seed: 42
+  max_steps: 1000
+  val_every: 50
+
+optimizer:
+  name: "AdamW"
+  lr: 5.0e-6             
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  grad_clip: 1.0
+
+scheduler:
+  type: "cosine"
+  warmup_steps: 100
+  min_lr: 5.0e-7

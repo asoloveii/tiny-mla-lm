@@ -3,6 +3,7 @@ pyyaml
 pytest
 tiktoken
 datasets
+transformers
 numpy
 tqdm
 omegaconf
@@ -19,3 +20,5 @@ chromadb
 sentence-transformers
 pypdf
 requests
+fastapi
+openai

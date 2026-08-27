@@ -4,7 +4,7 @@ defaults:
 
 wandb:
   project: "tiny-lm-sft"
-  name: "sft-finetome-159M"
+  name: "sft-finetome-100M"
   group: "sft"
   job_type: "finetune"
 
@@ -14,11 +14,14 @@ data:
   val_fraction: 0.01
 
 training:
-  device_batch_size: 8
-  gradient_accumulation_steps: 8
+  ckpt_dir: "./ckpts/sft"
+  ckpt_every: 500             
+  resume_from: "auto"
+  device_batch_size: 16
+  gradient_accumulation_steps: 4
   mixed_precision: "bfloat16"
   seed: 42
-  
+  val_every: 300
   # ~100k FineTome samples / 128 global batch size ≈ 3 epochs / ~2340 steps total
   max_steps: 2340
 

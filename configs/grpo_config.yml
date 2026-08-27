@@ -20,12 +20,15 @@ grpo:
   max_gen_len: 256       
 
 training:
-  device_batch_size: 2   # number of prompt trajectories per GPU per step
-  gradient_accumulation_steps: 4
+  ckpt_dir: "./ckpts/grpo"
+  ckpt_every: 250             
+  resume_from: "auto"
+  device_batch_size: 4
+  gradient_accumulation_steps: 2
   mixed_precision: "bfloat16"
   seed: 42
   max_steps: 1000
-  val_every: 50
+  val_every: 100
 
 optimizer:
   name: "AdamW"

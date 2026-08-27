@@ -11,21 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from model import TinyConfig, TinyLM
 from data.prepare import get_dataloaders
-
-
-def setup_ddp():
-    """Initializes DDP process group using environment variables set by torchrun."""
-    dist.init_process_group(backend="nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
-    return rank, local_rank, world_size, device
-
-
-def cleanup_ddp():
-    dist.destroy_process_group()
+from utils import *
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="pretrain_config")
@@ -48,8 +34,6 @@ def train(cfg: DictConfig):
     pt_dtype = getattr(torch, cfg.training.mixed_precision)
 
     model = TinyLM(model_config).to(device)
-    model = torch.compile(model)
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     optimizer = optim.AdamW(model.parameters(), lr=cfg.optimizer.lr)
     s1 = optim.lr_scheduler.LinearLR(optimizer, total_iters=cfg.scheduler.warmup_steps)
@@ -58,8 +42,14 @@ def train(cfg: DictConfig):
 
     scaler = torch.GradScaler(device, enabled=(pt_dtype == torch.float16))
 
-    step = 0
-    epoch = 0
+    start_step, start_epoch = load_checkpoint(
+        cfg, model, optimizer, lr_scheduler, scaler, device, rank
+    )
+
+    model = torch.compile(model)
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+
+    step, epoch = start_step, start_epoch
 
     while step < cfg.training.max_steps:
         if hasattr(train_sampler, "set_epoch"):
@@ -80,6 +70,9 @@ def train(cfg: DictConfig):
                 val_loss = validate(model, val_loader, cfg, device, pt_dtype)
                 if rank == 0:
                     wandb.log({"val/loss": val_loss}, step=step)
+
+            if (step + 1) % cfg.training.ckpt_every == 0 or (step + 1) == cfg.training.max_steps:
+                save_checkpoint(cfg, model, optimizer, lr_scheduler, scaler, step, epoch, rank)
 
             lr_scheduler.step()
             step += 1

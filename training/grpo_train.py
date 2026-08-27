@@ -1,6 +1,3 @@
-import os
-import re
-import copy
 import hydra
 import wandb
 import torch
@@ -14,16 +11,7 @@ from tqdm import tqdm
 
 from model import TinyConfig, TinyLM
 from data.prepare.gsm8k import get_gsm8k_dataloaders
-
-
-def extract_answer(text: str) -> str:
-    """Extract final numeric answer from generated CoT string ('#### 42')."""
-    match = re.search(r"####\s*(-?\d+(?:\.\d+)?)", text)
-    if match:
-        return match.group(1).strip()
-    # fallback to finding the last standalone number in text
-    numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
-    return numbers[-1] if numbers else ""
+from utils import *
 
 
 def compute_rewards(completions: list[str], ground_truths: list[str]) -> torch.Tensor:
@@ -40,19 +28,6 @@ def compute_rewards(completions: list[str], ground_truths: list[str]) -> torch.T
             r += 1.0
         rewards.append(r)
     return torch.tensor(rewards, dtype=torch.float32)
-
-
-def setup_ddp():
-    dist.init_process_group(backend="nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    torch.cuda.set_device(local_rank)
-    return rank, local_rank, world_size, torch.device(f"cuda:{local_rank}")
-
-
-def cleanup_ddp():
-    dist.destroy_process_group()
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="grpo_config")
@@ -73,6 +48,11 @@ def main(cfg: DictConfig):
 
     # actor (policy model)
     model = TinyLM(model_config).to(device)
+
+    start_step, start_epoch = load_checkpoint(
+        cfg, model, optimizer, scheduler, scaler, device, rank
+    )
+
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     # frozen ref model for kl penalty 
@@ -93,8 +73,7 @@ def main(cfg: DictConfig):
 
     scaler = torch.GradScaler(device, enabled=(pt_dtype == torch.float16))
 
-    step = 0
-    epoch = 0
+    step, epoch = start_step, start_epoch
 
     while step < cfg.training.max_steps:
         if hasattr(train_sampler, "set_epoch"):
@@ -117,6 +96,9 @@ def main(cfg: DictConfig):
                 device=device,
                 pt_dtype=pt_dtype,
             )
+
+            if (step + 1) % cfg.training.ckpt_every == 0 or (step + 1) == cfg.training.max_steps:
+                save_checkpoint(cfg, model, optimizer, scheduler, scaler, step, epoch, rank)
 
             if rank == 0:
                 wandb.log({

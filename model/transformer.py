@@ -38,19 +38,19 @@ def apply_rotary_pos_emb(x, rope_emb):
 
 @dataclass
 class TinyConfig:
-    d_model: int = 768
+    d_model: int = 576
     vocab_size: int = 50256
     max_seq_len: int = 2048
     max_batch_size: int = 512
     n_heads: int = 12
-    n_layers: int = 12
+    n_layers: int = 10
     
-    kv_latent_dim: int = 256
+    kv_latent_dim: int = 192
     qk_rope_head_dim: int = 32
     qk_nope_head_dim: int = 64
     v_head_dim: int = 64
     
-    hidden_dim: int = 2048
+    hidden_dim: int = 1536
     init_alpha: float = 0.4
     init_shift: float = 0.5
     theta: float = 10000.0
@@ -315,3 +315,8 @@ class TinyLM(nn.Module):
             start_pos += 1
 
         return ids
+
+
+if __name__ == "__main__":
+    model = TinyLM(TinyConfig())
+    print(f"number of params: {sum([p.numel() for p in model.parameters()]):,}")

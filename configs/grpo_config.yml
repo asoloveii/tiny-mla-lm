@@ -11,6 +11,7 @@ wandb:
 data:
   dataset_name: "openai/gsm8k"
   data_dir: "./data/processed/gsm8k"
+  num_workers: 8
 
 grpo:
   group_size: 8          # number of generations per prompt

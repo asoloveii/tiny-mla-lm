@@ -12,6 +12,7 @@ data:
   dataset_name: "HuggingFaceFW/fineweb-edu"
   data_dir: "./data/raw/fineweb"
   total_tokens: 2_000_000_000 
+  num_workers: 8
 
 training:
   ckpt_dir: "./ckpts/pretrain"

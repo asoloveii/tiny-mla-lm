@@ -27,7 +27,7 @@ def process_batch(batch_texts):
 
 def prepare_fineweb_shards(output_dir="./data/processed/fineweb", 
                            shard_size=100_000_000, 
-                           target_tokens=3_000_000_000, 
+                           target_tokens=2_000_000_000, 
                            val_shards=1,
                            chunk_size=1000):
     os.makedirs(output_dir, exist_ok=True)
@@ -95,7 +95,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--output_dir", type=str, default="./data/processed/fineweb")
     parser.add_argument("--shard_size", type=int, default=100_000_000)
-    parser.add_argument("--target_tokens", type=int, default=3_000_000_000)
+    parser.add_argument("--target_tokens", type=int, default=2_000_000_000)
     parser.add_argument("--val_shards", type=int, default=1)
     parser.add_argument("--chunk_size", type=int, default=1000)
 

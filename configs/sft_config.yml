@@ -12,6 +12,7 @@ data:
   dataset_name: "mlabonne/FineTome-100k"
   data_dir: "./data/processed/finetome100k"
   val_fraction: 0.01
+  num_workers: 8
 
 training:
   ckpt_dir: "./ckpts/sft"

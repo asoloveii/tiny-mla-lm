@@ -29,6 +29,7 @@ def train(cfg: DictConfig):
         data_dir=cfg.data.data_dir,
         seq_len=model_config.max_seq_len,
         batch_size=cfg.training.device_batch_size,
+        num_workers=cfg.data.num_workers,
     )
 
     pt_dtype = getattr(torch, cfg.training.mixed_precision)

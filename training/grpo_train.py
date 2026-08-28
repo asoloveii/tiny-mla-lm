@@ -44,6 +44,7 @@ def main(cfg: DictConfig):
     train_loader, val_loader, train_sampler = get_gsm8k_dataloaders(
         data_dir=cfg.data.data_dir,
         batch_size=cfg.training.device_batch_size,
+        num_workers=cfg.data.num_workers,
     )
 
     # actor (policy model)

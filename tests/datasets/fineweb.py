@@ -107,3 +107,26 @@ def test_dataloader_batching_real_data(processed_data_dir):
 
     assert batch_x.shape == (batch_size, seq_len)
     assert batch_y.shape == (batch_size, seq_len)
+
+
+def test_token_dataset_pretrain_backward_compatibility(tmp_path):
+    """Verify TokenDataset falls back seamlessly to standard pretraining (uint16, no masks)"""
+    pretrain_dir = tmp_path / "pretrain_dummy"
+    pretrain_dir.mkdir()
+
+    bin_path = os.path.join(pretrain_dir, "fineweb_train_0000.bin")
+    dummy_tokens = np.random.randint(0, 50000, size=500, dtype=np.uint16)
+    dummy_tokens.tofile(bin_path)
+
+    seq_len = 32
+    dataset = TokenDataset(bin_paths=[bin_path], seq_len=seq_len)
+
+    assert dataset.has_masks is False
+    assert dataset.dtype == np.uint16
+    assert len(dataset) > 0
+
+    x, y = dataset[0]
+
+    # Pretraining target alignment check (y is x shifted right by 1 token)
+    torch.testing.assert_close(x[1:], y[:-1])
+    assert -100 not in y.tolist()

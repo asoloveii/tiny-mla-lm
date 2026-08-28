@@ -71,12 +71,20 @@ class TokenDataset(Dataset):
     def __init__(self, bin_paths, seq_len):
         self.seq_len = seq_len
         self.bin_paths = sorted(bin_paths)
-        self._mmaps = None
 
-        itemsize = np.dtype(np.uint16).itemsize
+        self.label_paths = [p.replace("_tokens.bin", "_labels.bin") for p in self.bin_paths]
+        self.has_masks = all(
+            p.endswith("_tokens.bin") and os.path.exists(lp) 
+            for p, lp in zip(self.bin_paths, self.label_paths)
+        ) and len(self.bin_paths) > 0
+
+        self._token_mmaps = None
+        self._label_mmaps = None
+
+        self.dtype = np.int32 if self.has_masks else np.uint16
+        itemsize = np.dtype(self.dtype).itemsize
+
         shard_lengths = [os.path.getsize(p) // itemsize for p in self.bin_paths]
-
-        # non-overlapping (seq_len+1)-token windows; remainder per shard is dropped
         self.samples_per_shard = [max(0, (n - 1) // seq_len) for n in shard_lengths]
         self.cum_samples = np.cumsum([0] + self.samples_per_shard)
 
@@ -84,8 +92,10 @@ class TokenDataset(Dataset):
         return int(self.cum_samples[-1])
 
     def _lazy_init(self):
-        if self._mmaps is None:  
-            self._mmaps = [np.memmap(p, dtype=np.uint16, mode="r") for p in self.bin_paths]
+        if self._token_mmaps is None:  
+            self._token_mmaps = [np.memmap(p, dtype=self.dtype, mode="r") for p in self.bin_paths]
+            if self.has_masks:
+                self._label_mmaps = [np.memmap(p, dtype=self.dtype, mode="r") for p in self.label_paths]
 
     def _locate(self, idx):
         shard_i = int(np.searchsorted(self.cum_samples, idx, side="right") - 1)
@@ -96,7 +106,16 @@ class TokenDataset(Dataset):
     def __getitem__(self, idx):
         self._lazy_init()
         shard_i, offset = self._locate(idx)
-        chunk = self._mmaps[shard_i][offset : offset + self.seq_len + 1]
-        x = torch.from_numpy(chunk[:-1].astype(np.int64))
-        y = torch.from_numpy(chunk[1:].astype(np.int64))
+
+        x_chunk = self._token_mmaps[shard_i][offset : offset + self.seq_len + 1]
+        x = torch.from_numpy(x_chunk[:-1].astype(np.int64))
+
+        if self.has_masks:
+            # sft mode
+            y_chunk = self._label_mmaps[shard_i][offset : offset + self.seq_len + 1]
+            y = torch.from_numpy(y_chunk[1:].astype(np.int64))
+        else:
+            # pretraining mode
+            y = torch.from_numpy(x_chunk[1:].astype(np.int64))
+
         return x, y

@@ -40,47 +40,54 @@ def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     return raw
 
 
-def load_checkpoint(cfg, 
-                    model: torch.nn.Module, 
-                    optimizer: torch.optim.Optimizer, 
-                    scheduler, 
-                    scaler, 
-                    device: torch.device, 
-                    rank: int = 0) -> tuple[int, int]:
-    """Loads state dicts before DDP wrapping. Returns (start_step, start_epoch)"""
-    resume_path = getattr(cfg.training, "resume_from", None)
-    if resume_path == "auto":
-        resume_path = get_latest_checkpoint(cfg.training.ckpt_dir)
+def load_checkpoint(cfg, model, optimizer, lr_scheduler, scaler, device, rank):
+    is_sft = cfg.get("is_sft", False)
+    sft_ckpt_dir = cfg.training.get("ckpt_dir", "./ckpts/sft")
+    latest_sft_ckpt = os.path.join(sft_ckpt_dir, "checkpoint_latest.pt")
 
-    if not resume_path or not os.path.exists(resume_path):
+    # resume an ongoing sft run if a checkpoint already exists in ckpt_dir
+    if is_sft and os.path.exists(latest_sft_ckpt) and cfg.training.resume_from == "auto":
+        if rank == 0:
+            print(f"Resuming existing SFT run from {latest_sft_ckpt}")
+        checkpoint = torch.load(latest_sft_ckpt, map_location=device)
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+        scaler.load_state_dict(checkpoint["scaler"])
+        return checkpoint["step"], checkpoint["epoch"]
+
+    # cold start sft using pretrained weights
+    if is_sft:
+        pretrained_path = cfg.training.get("pretrained_ckpt_path", None)
+        assert pretrained_path and os.path.exists(pretrained_path), (
+            f"Pretrained checkpoint not found at: {pretrained_path}"
+        )
+        if rank == 0:
+            print(f"Loading pretrained weights for SFT from {pretrained_path}...")
+        
+        checkpoint = torch.load(pretrained_path, map_location=device)
+        
+        # extract model weights state dict
+        model_weights = checkpoint["model"] if "model" in checkpoint else checkpoint
+        model.load_state_dict(model_weights)
+        
+        # reset training counters and optimizer states for a fresh SFT start
         return 0, 0
 
-    if rank == 0:
-        print(f"\n[Checkpoint] Resuming from: {resume_path}")
-
-    checkpoint = torch.load(resume_path, map_location=device)
-
-    # remove DDP/compile key prefixes if loading legacy state dicts
-    state_dict = checkpoint["model"]
-    clean_state_dict = {
-        k.replace("_orig_mod.", "").replace("module.", ""): v 
-        for k, v in state_dict.items()
-    }
-
-    model.load_state_dict(clean_state_dict)
-    optimizer.load_state_dict(checkpoint["optimizer"])
-    scheduler.load_state_dict(checkpoint["scheduler"])
-
-    if "scaler" in checkpoint and scaler.is_enabled():
+    # pretraining resume or cold start from scratch
+    pretrain_latest = os.path.join(cfg.training.ckpt_dir, "checkpoint_latest.pt")
+    if os.path.exists(pretrain_latest) and cfg.training.resume_from == "auto":
+        if rank == 0:
+            print(f"Resuming pretraining from {pretrain_latest}")
+        checkpoint = torch.load(pretrain_latest, map_location=device)
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
         scaler.load_state_dict(checkpoint["scaler"])
+        return checkpoint["step"], checkpoint["epoch"]
 
-    start_step = checkpoint["step"] + 1
-    start_epoch = checkpoint.get("epoch", 0)
-
-    if rank == 0:
-        print(f"[Checkpoint] Success. Resuming step {start_step}, epoch {start_epoch}\n")
-
-    return start_step, start_epoch
+    # cold start pretraining from scratch
+    return 0, 0
 
 
 def save_checkpoint(cfg, 

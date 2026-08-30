@@ -11,7 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from model import TinyConfig, TinyLM
 from data.prepare import get_dataloaders
-from utils import *
+from .utils import *
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="pretrain_config")
@@ -23,7 +23,7 @@ def train(cfg: DictConfig):
 
     torch.manual_seed(cfg.training.seed + rank)
 
-    model_config = TinyConfig.from_yaml("./configs/model_config.yml")
+    model_config = TinyConfig.from_yaml("./configs/model_config.yaml")
 
     train_loader, val_loader, train_sampler = get_dataloaders(
         data_dir=cfg.data.data_dir,

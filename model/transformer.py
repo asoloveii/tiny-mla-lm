@@ -39,7 +39,7 @@ def apply_rotary_pos_emb(x, rope_emb):
 @dataclass
 class TinyConfig:
     d_model: int = 576
-    vocab_size: int = 50256
+    vocab_size: int = 50257
     max_seq_len: int = 2048
     max_batch_size: int = 512
     n_heads: int = 12

@@ -1,6 +1,6 @@
 model:
   d_model: 576
-  vocab_size: 50256
+  vocab_size: 50257
   max_seq_len: 2048
   max_batch_size: 512
   n_heads: 12

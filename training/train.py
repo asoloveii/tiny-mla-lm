@@ -51,74 +51,62 @@ def train(cfg: DictConfig):
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     step, epoch = start_step, start_epoch
+    pbar = tqdm(total=cfg.training.max_steps, initial=step, desc="Training", disable=(rank != 0))
 
     while step < cfg.training.max_steps:
         if hasattr(train_sampler, "set_epoch"):
             train_sampler.set_epoch(epoch)
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=(rank != 0))
-        for xs, ys in pbar:
-            if step >= cfg.training.max_steps:
-                break
+        accum_loss = 0.0
 
-            loss = train_one_batch(model, xs, ys, step, optimizer, scaler, cfg, device, pt_dtype)
+        for micro_step, (xs, ys) in enumerate(train_loader):
+            xs, ys = xs.to(device), ys.to(device)
+            
+            # determine sync boundary based on accumulation window
+            is_accumulating = ((micro_step + 1) % cfg.training.gradient_accumulation_steps != 0)
+            context = model.no_sync() if is_accumulating else torch.enable_grad()
 
-            if rank == 0:
-                current_lr = optimizer.param_groups[0]["lr"]
-                wandb.log({"train/lr": current_lr, "train/loss": loss}, step=step)
+            with context:
+                with torch.autocast(device_type=device.type, dtype=pt_dtype):
+                    logits = model(xs)
+                    loss = F.cross_entropy(logits.flatten(0, 1), ys.flatten(), ignore_index=-100)
+                    loss_scaled = loss / cfg.training.gradient_accumulation_steps
 
-            if (step + 1) % cfg.training.val_every == 0:
-                val_loss = validate(model, val_loader, cfg, device, pt_dtype)
+                scaler.scale(loss_scaled).backward()
+                accum_loss += loss.item() / cfg.training.gradient_accumulation_steps
+
+            # update weights only after accumulating full global batch size
+            if not is_accumulating:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.optimizer.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                lr_scheduler.step()
+
                 if rank == 0:
-                    wandb.log({"val/loss": val_loss}, step=step)
+                    current_lr = optimizer.param_groups[0]["lr"]
+                    wandb.log({"train/lr": current_lr, "train/loss": loss}, step=step)
 
-            if (step + 1) % cfg.training.ckpt_every == 0 or (step + 1) == cfg.training.max_steps:
-                save_checkpoint(cfg, model, optimizer, lr_scheduler, scaler, step, epoch, rank)
+                if (step + 1) % cfg.training.val_every == 0:
+                    val_loss = validate(model, val_loader, cfg, device, pt_dtype)
+                    if rank == 0:
+                        wandb.log({"val/loss": val_loss}, step=step)
 
-            lr_scheduler.step()
-            step += 1
+                if (step + 1) % cfg.training.ckpt_every == 0 or (step + 1) == cfg.training.max_steps:
+                    save_checkpoint(cfg, model, optimizer, lr_scheduler, scaler, step, epoch, rank)
+
+                lr_scheduler.step()
+                pbar.update(1)
+                step += 1
 
         epoch += 1
 
+    pbar.close()
     if rank == 0:
         wandb.finish()
 
     cleanup_ddp()
-
-
-def train_one_batch(model, 
-                    xs, 
-                    ys,
-                    step, 
-                    optimizer,
-                    scaler,
-                    cfg,
-                    device,
-                    pt_dtype):
-    model.train()
-    xs, ys = xs.to(device), ys.to(device)
-
-    is_accumulating = (step + 1) % cfg.training.gradient_accumulation_steps != 0
-    context = model.no_sync() if is_accumulating else torch.enable_grad()
-
-    with context:
-        with torch.autocast(device_type=device.type, dtype=pt_dtype):
-            logits = model(xs)
-            loss = F.cross_entropy(logits.flatten(0, 1), ys.flatten(), ignore_index=-100)
-            accum_loss = loss / cfg.training.gradient_accumulation_steps
-
-        scaler.scale(accum_loss).backward()
-
-    if not is_accumulating:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.optimizer.grad_clip)
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad(set_to_none=True)
-
-    # average loss across all GPU ranks 
-    dist.all_reduce(loss, op=dist.ReduceOp.AVG)
-    return loss.item()
 
 
 def validate(model, val_loader, cfg, device, pt_dtype):

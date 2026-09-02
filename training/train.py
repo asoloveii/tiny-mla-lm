@@ -37,8 +37,8 @@ def train(cfg: DictConfig):
     model = TinyLM(model_config).to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=cfg.optimizer.lr)
-    s1 = optim.lr_scheduler.LinearLR(optimizer, total_iters=cfg.scheduler.warmup_steps)
-    s2 = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.training.max_steps-cfg.scheduler.warmup_steps)
+    s1 = optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-8, end_factor=1.0, total_iters=cfg.scheduler.warmup_steps)
+    s2 = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.training.max_steps-cfg.scheduler.warmup_steps, min_lr=cfg.scheduler.min_lr)
     lr_scheduler = optim.lr_scheduler.SequentialLR(optimizer, schedulers=[s1, s2], milestones=[cfg.scheduler.warmup_steps])
 
     scaler = torch.GradScaler(device, enabled=(pt_dtype == torch.float16))
@@ -96,7 +96,6 @@ def train(cfg: DictConfig):
                 if (step + 1) % cfg.training.ckpt_every == 0 or (step + 1) == cfg.training.max_steps:
                     save_checkpoint(cfg, model, optimizer, lr_scheduler, scaler, step, epoch, rank)
 
-                lr_scheduler.step()
                 pbar.update(1)
                 step += 1
 
